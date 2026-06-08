@@ -177,6 +177,28 @@ describe('App render (Phase 1, themed)', () => {
     expect(frame).toContain('Tab complete') // dropdown hint
   })
 
+  test('the empty transcript shows the home hint (item 12)', async () => {
+    const store = createSessionStore()
+    store.apply({ type: 'gateway.ready' })
+
+    const frame = await captureFrame(
+      () => (
+        <ThemeProvider theme={() => store.state.theme}>
+          <App store={store} />
+        </ThemeProvider>
+      ),
+      { until: '/help', width: 72, height: 20 }
+    )
+
+    // (theme-independent assertions — testRender reuses a global root, so a prior
+    // test's skin/brand can bleed; the real app has one store. The home hint's
+    // content is what matters here.)
+    expect(frame).toContain('/help') // common command
+    expect(frame).toContain('/agents')
+    expect(frame).toContain('resume a session')
+    expect(frame).toContain('to mention') // the input tips line
+  })
+
   test('the status bar renders model · context% · cwd (item 14)', async () => {
     const store = createSessionStore()
     store.apply({ type: 'gateway.ready' })
