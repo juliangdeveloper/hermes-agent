@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.usage_pricing import extract_provider_cost_usd, real_session_cost_usd
+from agent.usage_pricing import extract_provider_cost_usd, nous_header_cost_usd, real_session_cost_usd
 
 
 # ── extract_provider_cost_usd — the per-response REAL cost reader ────────────
@@ -84,6 +84,32 @@ class TestRealSessionCost:
         agent = _FakeAgent()
         agent.session_actual_cost_usd = "0.42"  # corrupted attr → ignore
         assert real_session_cost_usd(agent) is None
+
+
+# ── nous_header_cost_usd — the CHROME status-bar cost (F3: header-only) ──────
+
+
+class TestNousHeaderCost:
+    def test_header_delta_only(self):
+        # 123_400 micros = $0.1234 — the Nous header source feeds the chrome.
+        assert nous_header_cost_usd(_FakeAgent(credits_micros=123_400)) == pytest.approx(0.1234)
+
+    def test_openrouter_accumulator_ignored(self):
+        # The OpenRouter usage.cost accumulator must NOT feed the chrome bar:
+        # a non-Nous session (no header → None) reports no cost even when the
+        # OpenRouter accumulator has a value.
+        assert nous_header_cost_usd(_FakeAgent(actual=0.42)) is None
+
+    def test_no_header_is_none(self):
+        assert nous_header_cost_usd(_FakeAgent()) is None
+
+    def test_negative_delta_clamped(self):
+        # A mid-session top-up makes the delta negative — never show negative.
+        assert nous_header_cost_usd(_FakeAgent(credits_micros=-50_000)) == 0.0
+
+    def test_agent_without_credits_method_is_none(self):
+        agent = SimpleNamespace(session_actual_cost_usd=0.42)
+        assert nous_header_cost_usd(agent) is None
 
 
 # ── Nous header fixture → real accumulator (full _capture_credits path) ─────

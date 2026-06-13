@@ -919,6 +919,33 @@ def real_session_cost_usd(agent: Any) -> Optional[float]:
     return total
 
 
+def nous_header_cost_usd(agent: Any) -> Optional[float]:
+    """Session-cumulative cost in USD derived ONLY from the Nous portal
+    ``x-nous-credits-*`` header delta, or None.
+
+    This is the STATUS-BAR cost source (glitch 2026-06-13, F3): the TUI chrome
+    must show cost ONLY when the session runs against the Nous portal, because
+    the header delta is the one figure we can trust without re-deriving per-model
+    cache/input/output pricing (which is unreliable across the model long tail).
+    Unlike :func:`real_session_cost_usd`, this DELIBERATELY ignores the
+    OpenRouter ``usage.cost`` accumulator — a non-Nous route reports no header,
+    so the chrome hides its cost segment entirely.
+
+    The ``/usage`` accounting page keeps using ``real_session_cost_usd`` (both
+    provider-reported sources); only the chrome bar narrows to header-only.
+    """
+    try:
+        spent_micros = agent.get_credits_spent_micros()
+    except Exception:
+        return None
+    if spent_micros is None:
+        return None
+    try:
+        return max(0, int(spent_micros)) / 1_000_000
+    except (TypeError, ValueError):
+        return None
+
+
 def has_known_pricing(
     model_name: str,
     provider: Optional[str] = None,

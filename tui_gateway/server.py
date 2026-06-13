@@ -2281,14 +2281,17 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
-    # Cost: provider-REPORTED only (OpenRouter usage.cost accumulator and/or
-    # the Nous x-nous-credits-* header delta). Never estimated. When nothing
-    # was reported `cost_usd` is ABSENT (not $0.00) and the TUI hides its
-    # cost segment — that's the intended UX.
+    # Cost (chrome status bar): Nous portal header delta ONLY (F3, glitch
+    # 2026-06-13). The OpenRouter usage.cost accumulator is deliberately NOT
+    # used here — per-model cache/input/output pricing is unreliable across the
+    # model long tail, so the bar shows cost ONLY on a Nous-portal session and
+    # hides it everywhere else. `cost_usd` is ABSENT (not $0.00) when no header
+    # was seen, and the TUI hides its cost segment. (The /usage accounting page
+    # still uses real_session_cost_usd — both provider-reported sources.)
     try:
-        from agent.usage_pricing import real_session_cost_usd
+        from agent.usage_pricing import nous_header_cost_usd
 
-        real_cost = real_session_cost_usd(agent)
+        real_cost = nous_header_cost_usd(agent)
         if real_cost is not None:
             usage["cost_usd"] = real_cost
             usage["cost_status"] = "actual"
@@ -2361,7 +2364,17 @@ def _compact_usage_text(session: dict) -> str:
             tail.append(f"compressions {u['compressions']}")
         lines.append("  " + " · ".join(tail))
 
-        cost_usd = u.get("cost_usd")
+        # The /usage page reports the FULL provider-reported cost (OpenRouter
+        # usage.cost accumulator AND/OR the Nous header delta) — NOT the chrome's
+        # Nous-header-only figure (F3 narrowed `_get_usage["cost_usd"]` to the
+        # status bar). Read it straight from real_session_cost_usd here so the
+        # accounting page keeps both sources.
+        try:
+            from agent.usage_pricing import real_session_cost_usd
+
+            cost_usd = real_session_cost_usd(agent)
+        except Exception:
+            cost_usd = None
         if cost_usd is not None:
             lines.append(f"  session cost: ${cost_usd:.4f} (provider-reported)")
         else:

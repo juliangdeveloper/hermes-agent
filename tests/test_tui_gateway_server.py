@@ -7541,11 +7541,15 @@ def test_get_usage_cost_absent_when_provider_reports_nothing(monkeypatch):
     assert usage["input"] == 35_000
 
 
-def test_get_usage_cost_present_when_provider_reported(monkeypatch):
+def test_get_usage_cost_absent_for_openrouter_accumulator_chrome(monkeypatch):
+    """F3: the chrome status bar shows cost ONLY from the Nous header delta.
+    An OpenRouter usage.cost accumulator alone (no x-nous-credits header) must
+    NOT surface cost_usd in _get_usage — the chrome hides cost off-Nous. (The
+    /usage accounting page still counts the accumulator; that's a separate path.)
+    """
     agent = _usage_agent(session_actual_cost_usd=0.4321)
     usage = server._get_usage(agent)
-    assert usage["cost_usd"] == pytest.approx(0.4321)
-    assert usage["cost_status"] == "actual"
+    assert "cost_usd" not in usage
 
 
 def test_get_usage_cost_from_nous_credits_delta(monkeypatch):
@@ -7553,6 +7557,7 @@ def test_get_usage_cost_from_nous_credits_delta(monkeypatch):
     agent.get_credits_spent_micros = lambda: 250_000  # $0.25 real header delta
     usage = server._get_usage(agent)
     assert usage["cost_usd"] == pytest.approx(0.25)
+    assert usage["cost_status"] == "actual"
 
 
 def test_compact_usage_per_model_rows_and_real_cost(monkeypatch):
