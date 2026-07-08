@@ -10675,8 +10675,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+        # Check if thread-scoped memory is enabled for this channel
+        _thread_memory_enabled = False
+        try:
+            from gateway.platforms.base import is_thread_memory_enabled
+            _platform_cfg = self.config.platforms.get(source.platform)
+            if _platform_cfg:
+                _thread_memory_enabled = is_thread_memory_enabled(
+                    _platform_cfg.extra,
+                    source.platform,
+                )
+        except Exception:
+            pass
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        context_prompt = build_session_context_prompt(
+            context,
+            redact_pii=_redact_pii,
+            thread_memory_enabled=_thread_memory_enabled,
+        )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

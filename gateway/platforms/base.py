@@ -2162,6 +2162,10 @@ def resolve_channel_prompt(
 
     Returns the prompt string, or None if no match is found.  Blank/whitespace-
     only prompts are treated as absent.
+
+    Supports both string values (legacy) and dict values (new format with
+    ``thread_memory: true``).  Dict entries are skipped here — they carry
+    configuration flags, not prompt text.
     """
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):
@@ -2173,10 +2177,31 @@ def resolve_channel_prompt(
         prompt = prompts.get(key)
         if prompt is None:
             continue
+        # Dict values are config objects (e.g. {thread_memory: true}),
+        # not prompt strings — skip them.
+        if isinstance(prompt, dict):
+            continue
         prompt = str(prompt).strip()
         if prompt:
             return prompt
     return None
+
+
+def is_thread_memory_enabled(
+    config_extra: dict,
+    platform_name: str,
+) -> bool:
+    """Check whether thread-scoped memory is enabled for a platform.
+
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Returns True when the entry for *platform_name* is a dict with
+    ``thread_memory: true``.
+    """
+    prompts = config_extra.get("channel_prompts") or {}
+    if not isinstance(prompts, dict):
+        return False
+    entry = prompts.get(platform_name)
+    return isinstance(entry, dict) and bool(entry.get("thread_memory"))
 
 
 def resolve_channel_skills(

@@ -381,6 +381,7 @@ def build_session_context_prompt(
     context: SessionContext,
     *,
     redact_pii: bool = False,
+    thread_memory_enabled: bool = False,
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
@@ -609,6 +610,42 @@ def build_session_context_prompt(
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+
+    # Thread-scoped memory injection
+    if thread_memory_enabled and context.source.thread_id:
+        try:
+            from pathlib import Path
+
+            thread_id = context.source.thread_id
+            thread_memory_dir = Path.home() / ".hermes" / "thread_memory"
+            thread_memory_dir.mkdir(parents=True, exist_ok=True)
+            thread_memory_file = thread_memory_dir / f"{thread_id}.md"
+
+            if thread_memory_file.exists():
+                content = thread_memory_file.read_text(encoding="utf-8").strip()
+                if content:
+                    lines.append("")
+                    lines.append(f"## Thread Memory — {thread_id}")
+                    lines.append(content)
+                    lines.append("")
+                    lines.append("---")
+                    lines.append(
+                        "This is thread-scoped memory for this conversation's topic."
+                    )
+                    lines.append(
+                        f"- Save project context, technical decisions, and session state here using write_file to ~/.hermes/thread_memory/{thread_id}.md"
+                    )
+                    lines.append(
+                        "- Save cross-thread facts (user identity, global preferences, credentials) to the shared memory tool as usual"
+                    )
+                    lines.append(
+                        "- When unsure, default here — this file's scope is this thread only"
+                    )
+                    lines.append(
+                        "- Keep this file under 2200 characters (same limit as shared memory)"
+                    )
+        except Exception as exc:
+            logger.warning("Failed to load thread memory for %s: %s", context.source.thread_id, exc)
 
     return "\n".join(lines)
 
