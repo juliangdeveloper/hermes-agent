@@ -199,6 +199,17 @@ export function registerPaneCloser(paneId: string, close: () => void) {
   paneClosers[paneId] = close
 }
 
+/** Remove a pane from the tree WITHOUT a dismissal record — for surfaces
+ *  whose lifecycle an owner store drives (session tiles): the owner removes
+ *  the contribution too, and a later re-open must re-adopt cleanly. */
+export function removeTreePane(paneId: string) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(removePane(tree, paneId))
+  }
+}
+
 export function closeTreePane(paneId: string) {
   const closer = paneClosers[paneId]
 

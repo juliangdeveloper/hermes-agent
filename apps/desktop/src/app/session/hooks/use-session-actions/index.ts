@@ -41,6 +41,7 @@ import {
   setYoloActive,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -326,6 +327,7 @@ export function useSessionActions({
         if (state.storedSessionId !== storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(runtimeId)
+          dropSessionState(runtimeId)
 
           return null
         }
@@ -374,11 +376,13 @@ export function useSessionActions({
 
         if (cachedViewState !== cachedState) {
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
+          publishSessionState(cachedRuntimeId, cachedViewState)
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+          dropSessionState(cachedRuntimeId)
         } else {
           setFreshDraftReady(false)
           clearNotifications()
@@ -415,6 +419,7 @@ export function useSessionActions({
 
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+            dropSessionState(cachedRuntimeId)
           }
         }
       }

@@ -1,6 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { $clarifyRequest } from './clarify'
+import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { $activeSessionId } from './session'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -23,6 +23,7 @@ interface KeyedPrompt {
 
 interface PromptStore<T extends KeyedPrompt> {
   $active: ReadableAtom<null | T>
+  $all: ReadableAtom<Record<string, T>>
   clear: (sessionId?: string | null, requestId?: string) => void
   reset: () => void
   set: (request: T) => void
@@ -38,6 +39,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 
   return {
     $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    $all,
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
     clear(sessionId, requestId) {
@@ -120,6 +122,20 @@ export const $activeSessionAwaitingInput = computed(
   [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
   (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
 )
+
+/** Per-session `awaitingInput` — the tile composer's counterpart of
+ *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
+ *  active one). */
+export function sessionAwaitingInput(sessionId: string | null) {
+  return computed(
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all],
+    (clarify, approvals, sudos, secrets) => {
+      const key = keyFor(sessionId)
+
+      return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
+    }
+  )
+}
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).

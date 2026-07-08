@@ -938,6 +938,9 @@ export function usePromptActions({
   return {
     cancelRun,
     editMessage,
+    // Session tiles route their slash input here (targets THEIR session via
+    // options.sessionId; app-level effects — branch, handoff — act on main).
+    executeSlashCommand,
     handleThreadMessagesChange,
     handoffSession,
     reloadFromMessage,

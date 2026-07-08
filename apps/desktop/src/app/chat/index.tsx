@@ -1,13 +1,12 @@
 import {
   type AppendMessage,
   AssistantRuntimeProvider,
-  ExportedMessageRepository,
   type ThreadMessage
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -19,29 +18,19 @@ import { ErrorState } from '@/components/ui/error-state'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
+import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $gatewaySwapTarget } from '@/store/profile'
 import {
-  $activeSessionId,
-  $awaitingResponse,
-  $busy,
   $contextSuggestions,
-  $currentCwd,
-  $currentModel,
-  $currentProvider,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
   $introSeed,
-  $lastVisibleMessageIsUser,
-  $messages,
-  $messagesEmpty,
   $resumeExhaustedSessionId,
-  $selectedStoredSessionId,
   $sessions,
   sessionPinId
 } from '@/store/session'
@@ -56,10 +45,13 @@ import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
+import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
 
@@ -198,44 +190,9 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useStore($messages)
+  const storeMessages = useStore(useSessionView().$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
-  const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
-
-  const runtimeMessageRepository = useMemo(() => {
-    const items: { message: ThreadMessage; parentId: string | null }[] = []
-    const branchParentByGroup = new Map<string, string | null>()
-    let visibleParentId: string | null = null
-    let headId: string | null = null
-
-    for (const message of messages) {
-      let parentId = visibleParentId
-
-      if (message.role === 'assistant' && message.branchGroupId) {
-        if (!branchParentByGroup.has(message.branchGroupId)) {
-          branchParentByGroup.set(message.branchGroupId, visibleParentId)
-        }
-
-        parentId = branchParentByGroup.get(message.branchGroupId) ?? null
-      }
-
-      const cachedMessage = runtimeMessageCacheRef.current.get(message)
-      const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
-
-      if (!cachedMessage) {
-        runtimeMessageCacheRef.current.set(message, runtimeMessage)
-      }
-
-      items.push({ message: runtimeMessage, parentId })
-
-      if (!message.hidden) {
-        visibleParentId = message.id
-        headId = message.id
-      }
-    }
-
-    return ExportedMessageRepository.fromBranchableArray(items, { headId })
-  }, [messages])
+  const runtimeMessageRepository = useRuntimeMessageRepository(messages)
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -283,29 +240,36 @@ export function ChatView({
 }: ChatViewProps) {
   const location = useLocation()
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
-  const awaitingResponse = useStore($awaitingResponse)
-  const busy = useStore($busy)
+  // The view this surface renders: the primary route-driven session (global
+  // atoms) or a tile's session slice — same component either way.
+  const view = useSessionView()
+  const composerScope = useComposerScope()
+  const isPrimary = view.kind === 'primary'
+  const activeSessionId = useStore(view.$runtimeId)
+  const awaitingResponse = useStore(view.$awaitingResponse)
+  const busy = useStore(view.$busy)
   const contextSuggestions = useStore($contextSuggestions)
-  const currentCwd = useStore($currentCwd)
-  const currentModel = useStore($currentModel)
-  const currentProvider = useStore($currentProvider)
+  const currentCwd = useStore(view.$cwd)
+  const currentModel = useStore(view.$model)
+  const currentProvider = useStore(view.$provider)
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
-  // PERF: ChatView must not subscribe to $messages — the atom is replaced on
-  // every streaming delta flush (~30×/s) and a subscription here re-renders
-  // the entire chat shell (header, chat bar, thread wrapper) per token. The
-  // runtime that DOES need the messages lives in ChatRuntimeBoundary below;
-  // this component only needs streaming-stable derivations.
-  const messagesEmpty = useStore($messagesEmpty)
-  const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
-  const selectedSessionId = useStore($selectedStoredSessionId)
+  // PERF: ChatView must not subscribe to the view's $messages — the atom is
+  // replaced on every streaming delta flush (~30×/s) and a subscription here
+  // re-renders the entire chat shell (header, chat bar, thread wrapper) per
+  // token. The runtime that DOES need the messages lives in
+  // ChatRuntimeBoundary below; this component only needs streaming-stable
+  // derivations.
+  const messagesEmpty = useStore(view.$messagesEmpty)
+  const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
+  const selectedSessionId = useStore(view.$storedId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
-  const routedSessionId = routeSessionId(location.pathname)
+  // A tile IS its session — no route involved, never "mismatched".
+  const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
 
   // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /
@@ -317,6 +281,7 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
+    isPrimary &&
     !isSecondaryWindow() &&
     freshDraftReady &&
     !isRoutedSessionView &&
@@ -335,7 +300,7 @@ export function ChatView({
   // Suppress the loader and show an explicit error + manual Retry instead of
   // spinning forever. Gated on the route matching so a stale latch from another
   // session can't blank the current one.
-  const resumeExhausted = isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
+  const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
 
   const loadingSession =
     !resumeExhausted && isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
@@ -403,21 +368,24 @@ export function ChatView({
       const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
 
       if (refs.length) {
-        requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
+        requestComposerInsert(refs.join(' '), { mode: 'inline', target: composerScope.target })
       }
 
       if (osDrops.length) {
         void onAttachDroppedItems(osDrops)
       }
     },
-    [currentCwd, onAttachDroppedItems]
+    [composerScope.target, currentCwd, onAttachDroppedItems]
   )
 
   // Dropping a sidebar session inserts an @session link the agent can resolve
   // via session_search (carries the source profile, so cross-profile works).
-  const onDropSession = useCallback((session: SessionDragPayload) => {
-    requestComposerInsertRefs([sessionInlineRef(session)], { target: 'main' })
-  }, [])
+  const onDropSession = useCallback(
+    (session: SessionDragPayload) => {
+      requestComposerInsertRefs([sessionInlineRef(session)], { target: composerScope.target })
+    },
+    [composerScope.target]
+  )
 
   const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles, onDropSession })
 
@@ -429,15 +397,19 @@ export function ChatView({
       )}
     >
       <Backdrop />
-      <ChatHeader
-        activeSessionId={activeSessionId}
-        isRoutedSessionView={isRoutedSessionView}
-        onDeleteSelectedSession={onDeleteSelectedSession}
-        onToggleSelectedPin={onToggleSelectedPin}
-        selectedSessionId={selectedSessionId}
-      />
+      {/* Tiles get their chrome from the layout zone (chip strip); the modal
+          prompt overlays stay active-session-scoped in the primary surface. */}
+      {isPrimary && (
+        <ChatHeader
+          activeSessionId={activeSessionId}
+          isRoutedSessionView={isRoutedSessionView}
+          onDeleteSelectedSession={onDeleteSelectedSession}
+          onToggleSelectedPin={onToggleSelectedPin}
+          selectedSessionId={selectedSessionId}
+        />
+      )}
 
-      <PromptOverlays />
+      {isPrimary && <PromptOverlays />}
 
       <ChatRuntimeBoundary
         busy={busy}

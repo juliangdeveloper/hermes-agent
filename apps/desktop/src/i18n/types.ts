@@ -1306,6 +1306,7 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      openInSplit: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string

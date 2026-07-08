@@ -22,6 +22,7 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -118,6 +119,15 @@ function useSessionActions({
   }
 
   const items: ItemSpec[] = [
+    {
+      disabled: !sessionId,
+      icon: 'split-horizontal',
+      label: r.openInSplit,
+      onSelect: () => {
+        triggerHaptic('selection')
+        openSessionTile(sessionId)
+      }
+    },
     ...(canOpenSessionWindow()
       ? [
           {

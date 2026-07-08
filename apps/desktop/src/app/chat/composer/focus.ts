@@ -13,7 +13,9 @@
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
-export type ComposerTarget = 'edit' | 'main'
+/** Composer routing key. The main chat is `'main'`, the edit composer
+ *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
+export type ComposerTarget = 'edit' | 'main' | (string & {})
 export type ComposerInsertMode = 'block' | 'inline'
 
 interface FocusDetail {

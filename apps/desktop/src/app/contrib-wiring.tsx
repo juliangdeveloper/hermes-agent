@@ -37,7 +37,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
 import { emitGatewayEvent } from '@/contrib/events'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { getSessionMessages, triggerCronJob } from '@/hermes'
+import { getSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, triggerCronJob } from '@/hermes'
 import {
   type ChatMessage,
   chatMessageText,
@@ -87,11 +87,13 @@ import {
   setMessages,
   setRememberedSessionId
 } from '@/store/session'
+import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
+import type { SessionResumeResponse } from '@/types/hermes'
 
 import { ChatView } from './chat'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
@@ -631,6 +633,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     cancelRun,
     editMessage,
+    executeSlashCommand,
     handleThreadMessagesChange,
     reloadFromMessage,
     restoreToMessage,
@@ -653,6 +656,61 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     sttEnabled,
     updateSessionState
   })
+
+  // Session-tile delegate: resume/submit/interrupt for tiled sessions WITHOUT
+  // touching the primary view ($activeSessionId / $messages stay the main
+  // thread's). Resume reuses a live runtime binding when one exists (incl.
+  // the main thread's own session); a cold tile binds + hydrates the cache,
+  // which publishSessionState mirrors to the tile.
+  useEffect(() => {
+    setSessionTileDelegate({
+      executeSlash: async (rawCommand, sessionId) => {
+        await executeSlashCommand(rawCommand, { sessionId })
+      },
+      interruptSession: async runtimeId => {
+        await requestGateway('session.interrupt', { session_id: runtimeId })
+      },
+      resumeTile: async storedSessionId => {
+        const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+        if (existing && sessionStateByRuntimeIdRef.current.get(existing)?.storedSessionId === storedSessionId) {
+          publishSessionState(existing, sessionStateByRuntimeIdRef.current.get(existing)!)
+
+          return existing
+        }
+
+        const [prefetch, resumed] = await Promise.all([
+          getSessionMessages(storedSessionId).catch(() => null),
+          requestGateway<SessionResumeResponse>('session.resume', { session_id: storedSessionId, cols: 96 })
+        ])
+
+        const runtimeId = resumed?.session_id
+
+        if (!runtimeId) {
+          throw new Error('resume returned no session id')
+        }
+
+        updateSessionState(
+          runtimeId,
+          state => ({
+            ...state,
+            busy: Boolean(resumed?.info?.running),
+            messages:
+              state.messages.length > 0
+                ? state.messages
+                : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+          }),
+          storedSessionId
+        )
+
+        return runtimeId
+      },
+      submitToSession: async (runtimeId, text) => {
+        await requestGateway('prompt.submit', { session_id: runtimeId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+      },
+      updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
+    })
+  }, [executeSlashCommand, requestGateway, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState])
 
   // The popped-out pet drives two actions back into the app: send a prompt and
   // open the most recent thread. Registered ONCE through refs tracking the
