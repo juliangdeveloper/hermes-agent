@@ -37,6 +37,9 @@ interface PaneChrome {
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
   placement?: string
+  /** No Close in the tab menu — the one surface the app can't lose (the
+   *  main workspace). Session tiles share `placement: 'main'` but close. */
+  uncloseable?: boolean
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

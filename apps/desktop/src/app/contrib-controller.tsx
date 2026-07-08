@@ -88,7 +88,7 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     title: 'main',
-    data: { placement: 'main', minWidth: '22vw' },
+    data: { placement: 'main', minWidth: '22vw', uncloseable: true },
     render: () => <WiredPane part="chatRoutes" />
   },
   {

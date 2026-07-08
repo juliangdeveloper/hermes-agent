@@ -90,10 +90,13 @@ function ZoneMenu({
         <ContextMenuItem onSelect={() => toggleTreeGroupMinimized(nodeId, !minimized)}>
           {minimized ? 'Restore' : 'Minimize'}
         </ContextMenuItem>
-        {closable && (
+        {/* Resolved at render: the menu mounts on open, after the right-click
+            set menuPaneRef — so an uncloseable target hides the item instead
+            of offering a dead action. */}
+        {closable?.() !== undefined && (
           <ContextMenuItem
             onSelect={() => {
-              const paneId = closable()
+              const paneId = closable?.()
 
               if (paneId) {
                 closeTreePane(paneId)
@@ -187,11 +190,11 @@ export function TreeGroup({ node }: { node: GroupNode }) {
         })
 
   // Close targets the right-clicked chip (falling back to the active pane);
-  // the main zone is the one surface without a Close.
+  // only panes that declare `uncloseable` (the main workspace) are exempt.
   const closable = () => {
     const paneId = menuPaneRef.current ?? activeId
 
-    return paneChrome(paneFor(paneId)).placement === 'main' ? undefined : paneId
+    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
   }
 
   // Same menu on the header strip and the edit veil — one prop bag.

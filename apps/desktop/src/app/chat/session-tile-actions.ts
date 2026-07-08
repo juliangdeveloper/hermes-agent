@@ -56,9 +56,25 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   runtimeIdRef.current = runtimeId
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
-  // Tile busy tracks the SESSION state (mirrors on every update), never $busy.
-  const busyRef = useRef(false)
-  busyRef.current = $sessionStates.get()[runtimeId]?.busy ?? false
+
+  // Tile busy tracks the SESSION state, never the global $busy — and it must
+  // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
+  // re-render on busy edges), and a stale `true` silently blocks every
+  // subsequent submit ("tile only sends one message"). The setter is a no-op:
+  // session state owns busy; submit's optimistic writes flow through
+  // updateSession.
+  const busyRef = useMemo(
+    () =>
+      ({
+        get current() {
+          return $sessionStates.get()[runtimeIdRef.current]?.busy ?? false
+        },
+        set current(_value: boolean) {
+          // Owned by session state.
+        }
+      }) as { current: boolean },
+    []
+  )
 
   const update = useCallback(
     (updater: (state: ClientSessionState) => ClientSessionState) =>
