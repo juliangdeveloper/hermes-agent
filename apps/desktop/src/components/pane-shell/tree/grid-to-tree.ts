@@ -35,8 +35,8 @@ function isValidCut(zones: GridZone[], axis: 'x' | 'y', at: number): boolean {
  */
 function cut(zones: GridZone[], assignPane: (zoneIndex: number) => string[]): LayoutNode | null {
   if (zones.length === 1) {
-    // Zones without panes become EMPTY groups — stable regions, kept in the
-    // layout as drop targets (FancyZones semantics).
+    // Zones without panes become EMPTY groups — editor-authored drop targets
+    // that live until the first structural op prunes them (normalize).
     return group(assignPane(zones[0].index))
   }
 

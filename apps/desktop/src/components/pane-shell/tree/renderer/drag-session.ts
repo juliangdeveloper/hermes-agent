@@ -19,10 +19,16 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 
-import { $dropHint, $treeDragging, mergeTreeZones, moveTreePane, reorderTreePane } from '../store'
+import type { DropPosition } from '../model'
+import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePane, reorderTreePane } from '../store'
 import { type EngineZone, HighlightedZones, primaryZone } from '../zones-engine'
 
 const DRAG_THRESHOLD_PX = 4
+
+/** Pointer within this normalized band of a zone edge targets a SPLIT drop
+ *  (the coarse gesture — fling toward a side). The arrow chips near the badge
+ *  are the precise targets and win over the band. */
+const EDGE_BAND = 0.2
 
 function snapshotZones(): EngineZone[] {
   return [...document.querySelectorAll<HTMLElement>('[data-tree-group]')].map(el => {
@@ -31,6 +37,44 @@ function snapshotZones(): EngineZone[] {
     return { id: el.dataset.treeGroup!, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } }
   })
 }
+
+/** Sub-zone drop position: an arrow chip under the pointer wins (precise),
+ *  else the dominant edge band (coarse), else center = stack. */
+function subZonePosition(zones: EngineZone[], groupId: string, x: number, y: number): DropPosition {
+  const chip = document
+    .elementsFromPoint(x, y)
+    .find((el): el is HTMLElement => el instanceof HTMLElement && Boolean(el.dataset.dropPos))
+
+  if (chip) {
+    return chip.dataset.dropPos as DropPosition
+  }
+
+  const rect = zones.find(zone => zone.id === groupId)?.rect
+
+  if (!rect) {
+    return 'center'
+  }
+
+  const rx = (x - rect.left) / Math.max(1, rect.right - rect.left)
+  const ry = (y - rect.top) / Math.max(1, rect.bottom - rect.top)
+
+  const edges: [DropPosition, number][] = [
+    ['left', rx],
+    ['right', 1 - rx],
+    ['top', ry],
+    ['bottom', 1 - ry]
+  ]
+
+  const [pos, depth] = edges.reduce((a, b) => (b[1] < a[1] ? b : a))
+
+  return depth < EDGE_BAND ? pos : 'center'
+}
+
+const sameHint = (a: DropHint | null, b: DropHint | null) =>
+  a?.groupId === b?.groupId &&
+  a?.pos === b?.pos &&
+  (a?.groupIds?.length ?? 0) === (b?.groupIds?.length ?? 0) &&
+  (a?.groupIds ?? []).every((id, i) => b?.groupIds?.[i] === id)
 
 interface ReorderContext {
   groupId: string
@@ -265,13 +309,31 @@ export function startPaneDrag(
       }
     }
 
-    if (highlighted.update(zones, lastPoint, ev.shiftKey)) {
-      const groupIds = [...highlighted.zones()]
-      $dropHint.set(
-        groupIds.length > 0
-          ? { kind: 'group', groupId: primaryZone(zones, groupIds, lastPoint) ?? undefined, groupIds, pos: 'center' }
-          : null
-      )
+    // The hint updates on highlight-set changes AND on sub-zone position
+    // changes (arrow chips / edge bands within the same primary zone).
+    highlighted.update(zones, lastPoint, ev.shiftKey)
+    let groupIds = [...highlighted.zones()]
+
+    // Spanning multiple zones is EXPLICIT (Shift). Without it, the seam-
+    // proximity capture (sensitivity radius grabs both neighbors near a
+    // shared edge) collapses to the primary zone — otherwise a drop near a
+    // seam silently merges zones the user never asked to merge.
+    if (!ev.shiftKey && groupIds.length > 1) {
+      const collapsed = primaryZone(zones, groupIds, lastPoint)
+      groupIds = collapsed ? [collapsed] : []
+    }
+
+    const groupId = groupIds.length > 0 ? (primaryZone(zones, groupIds, lastPoint) ?? undefined) : undefined
+
+    // Sub-positions only make sense for a single-zone drop; a Shift-span
+    // always merges (pos ignored).
+    const pos: DropPosition =
+      groupIds.length === 1 && groupId ? subZonePosition(zones, groupId, lastPoint.x, lastPoint.y) : 'center'
+
+    const next: DropHint | null = groupIds.length > 0 ? { kind: 'group', groupId, groupIds, pos } : null
+
+    if (!sameHint($dropHint.get(), next)) {
+      $dropHint.set(next)
     }
   }
 
@@ -300,14 +362,18 @@ export function startPaneDrag(
     }
 
     if (commit && mode === 'zone') {
-      const hl = [...highlighted.zones()]
-      const target = primaryZone(zones, hl, lastPoint)
+      // Drop what the hint SHOWS — the overlay and the commit share one truth
+      // (the raw highlight set can hold both seam neighbors; the hint already
+      // collapsed that to the primary unless Shift made the span explicit).
+      const hint = $dropHint.get()
+      const targets = hint?.groupIds ?? []
 
-      if (hl.length > 1) {
+      if (targets.length > 1) {
         // Shift-span: merge the highlighted zones, dropping the pane across them.
-        mergeTreeZones(hl, paneId, target)
-      } else if (target) {
-        moveTreePane(paneId, { groupId: target, pos: 'center' })
+        mergeTreeZones([...targets], paneId, hint?.groupId ?? null)
+      } else if (hint?.groupId) {
+        // center = join the stack; an edge = split the zone and land there.
+        moveTreePane(paneId, { groupId: hint.groupId, pos: hint.pos ?? 'center' })
       }
     }
 

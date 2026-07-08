@@ -391,9 +391,9 @@ export function reorderTreePane(groupId: string, paneId: string, toIndex: number
   }
 }
 
-/** Split a zone on `side`. With `movePaneId` (one of several panes in the
- *  group) the pane MOVES into the new zone; otherwise the zone is empty. */
-export function splitTreeZone(groupId: string, side: RootEdge, movePaneId?: string) {
+/** Split a zone on `side`, moving `movePaneId` out of its stack into the new
+ *  zone (VS Code split-and-move — the zone menu's Split actions). */
+export function splitTreeZone(groupId: string, side: RootEdge, movePaneId: string) {
   const tree = $layoutTree.get()
 
   if (tree) {

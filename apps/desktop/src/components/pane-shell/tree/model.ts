@@ -118,14 +118,22 @@ export function allPaneIds(node: LayoutNode): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical form: unwrap single-child splits and flatten same-orientation
- * nesting (weights scaled into the parent's slot). EMPTY GROUPS ARE KEPT —
- * zones are stable regions (FancyZones semantics): dragging the last pane out
- * of a zone leaves an empty zone, not a collapsed layout.
+ * Canonical form: unwrap single-child splits, flatten same-orientation
+ * nesting (weights scaled into the parent's slot), and PRUNE EMPTY GROUPS —
+ * dragging the last pane out of a zone closes the zone and its siblings
+ * absorb the space (VS Code semantics). Keeping empties as "stable regions"
+ * (the original FancyZones rule) let invisible residue accumulate into
+ * corrupt-feeling structure (`row([]|[])` eating half a slot); authored
+ * empty zones still exist inside the zone editor's own grid model, and an
+ * editor-applied tree keeps them until the first structural op.
  */
 export function normalize(node: LayoutNode): LayoutNode | null {
   if (node.type === 'group') {
-    const active = node.panes.length === 0 ? '' : node.panes.includes(node.active) ? node.active : node.panes[0]
+    if (node.panes.length === 0) {
+      return null
+    }
+
+    const active = node.panes.includes(node.active) ? node.active : node.panes[0]
     // A header override only means something on a STACK. A zone at (or down
     // to) one pane returns to the contextual default — header hidden — so no
     // structural change ever leaves a stale lone-pane tab behind. (Double-
@@ -235,8 +243,31 @@ export function insertAtGroup(
 }
 
 /**
+ * The tree's VISIBLE shape: pane stacks + split orientations, with empty
+ * groups skipped (editor-session trees may still hold them) and single-child
+ * runs unwrapped. Two trees with equal signatures are indistinguishable on
+ * screen regardless of node ids.
+ */
+function shapeSignature(node: LayoutNode): string {
+  if (node.type === 'group') {
+    return node.panes.length > 0 ? `[${node.panes.join(',')}]` : ''
+  }
+
+  const children = node.children.map(shapeSignature).filter(Boolean)
+
+  if (children.length === 0) {
+    return ''
+  }
+
+  return children.length === 1 ? children[0] : `${node.orientation}(${children.join('|')})`
+}
+
+/**
  * Move = remove + insert. If the target group vanished during removal (the
- * pane was its only occupant), the move is a no-op.
+ * pane was its only occupant), the move is a no-op. A move whose result
+ * LOOKS identical to the current layout is also a no-op — e.g. a "split
+ * bottom" drop onto the zone the pane already sits alone below would only
+ * rebuild the same arrangement under a fresh zone id.
  */
 export function movePane(
   root: LayoutNode,
@@ -261,7 +292,9 @@ export function movePane(
     return root
   }
 
-  return insertAtGroup(without, target.groupId, paneId, target.pos) ?? root
+  const next = insertAtGroup(without, target.groupId, paneId, target.pos) ?? root
+
+  return shapeSignature(next) === shapeSignature(root) ? root : next
 }
 
 /** Group ids of every leaf under a node, in tree order. */
@@ -475,22 +508,24 @@ function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => Layou
 }
 
 /**
- * Split a zone in two — the inverse of a span-merge. When `movePaneId` names
- * one of SEVERAL panes in the group, the new zone opens WITH that pane in it
- * (VS Code "split right" — split and move in one gesture). Otherwise (no
- * pane / the group's only pane) the new zone is empty: a pure unspan, the
- * runtime equivalent of the zone editor's Split.
+ * Split a zone: `movePaneId` (one of SEVERAL panes in the group) moves into
+ * the new zone on `side` — VS Code "split right", split and move in one
+ * gesture. A lone pane can't split away from itself: no-op (normalize prunes
+ * the empty zone the split would have minted).
  */
-export function splitGroupZone(root: LayoutNode, groupId: string, side: RootEdge, movePaneId?: string): LayoutNode {
+export function splitGroupZone(root: LayoutNode, groupId: string, side: RootEdge, movePaneId: string): LayoutNode {
   const orientation: Orientation = side === 'left' || side === 'right' ? 'row' : 'column'
   const before = side === 'left' || side === 'top'
 
   return (
     normalize(
       replaceNode(root, groupId, g => {
-        const carried = movePaneId && g.panes.length > 1 && g.panes.includes(movePaneId) ? movePaneId : null
-        const added = group(carried ? [carried] : [])
-        const remaining = carried ? { ...g, panes: g.panes.filter(p => p !== carried) } : g
+        if (g.panes.length < 2 || !g.panes.includes(movePaneId)) {
+          return g
+        }
+
+        const added = group([movePaneId])
+        const remaining = { ...g, panes: g.panes.filter(p => p !== movePaneId) }
 
         return split(orientation, before ? [added, remaining] : [remaining, added], [1, 1])
       })

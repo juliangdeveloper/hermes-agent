@@ -1,7 +1,8 @@
 /**
  * Group node renderer — a ZONE: header strip (tabs when stacked, minimize
  * chevron) + the active pane's content, resolved from the contribution
- * registry (`area: 'panes'`). Empty zones persist as stable regions.
+ * registry (`area: 'panes'`). Empty zones exist only in editor-authored
+ * trees (drop targets until the first structural op prunes them).
  *
  * Dragging is FancyZones-style (drag-session.ts): the layout stays fixed and
  * every zone lights up as a whole-region drop target. Right-click opens the
@@ -19,7 +20,7 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
-import type { GroupNode, RootEdge } from '../model'
+import type { DropPosition, GroupNode, RootEdge } from '../model'
 import { adjacentGroup } from '../model'
 import {
   $dropHint,
@@ -342,7 +343,10 @@ export function TreeGroup({ node }: { node: GroupNode }) {
 
       {/* FancyZones drop overlay: ZonesOverlay semantics — every zone shows
           the inactive fill, the highlighted set gets the highlight fill at
-          highlightOpacity (50%), all fading in on the 200ms alpha ramp. */}
+          highlightOpacity (50%), all fading in on the 200ms alpha ramp. The
+          PRIMARY zone also offers directional targets (VS Code editor-drop
+          style): hover/drop an arrow chip — or fling into an edge band — to
+          SPLIT that side instead of stacking. */}
       {showZoneOverlay && (
         <div
           className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-[3px] border transition-colors duration-75"
@@ -357,19 +361,85 @@ export function TreeGroup({ node }: { node: GroupNode }) {
             margin: highlightedZone ? 2 : 4
           }}
         >
-          {primary && (
-            <span className="rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
-              {(hint?.groupIds?.length ?? 0) > 1
-                ? 'span here'
-                : isDragSource
-                  ? 'stays here'
-                  : isEmpty
-                    ? 'move here'
-                    : 'stack here'}
-            </span>
-          )}
+          {primary && <DropTargets multi={(hint?.groupIds?.length ?? 0) > 1} pos={hint?.pos ?? 'center'} source={isDragSource} stackLabel={isEmpty ? 'move here' : 'stack here'} />}
         </div>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Directional drop targets (primary zone only)
+// ---------------------------------------------------------------------------
+
+const DROP_CHIPS: { arrow: string; pos: Exclude<DropPosition, 'center'> }[] = [
+  { arrow: 'arrow-up', pos: 'top' },
+  { arrow: 'arrow-right', pos: 'right' },
+  { arrow: 'arrow-down', pos: 'bottom' },
+  { arrow: 'arrow-left', pos: 'left' }
+]
+
+const CHIP_SPOT: Record<Exclude<DropPosition, 'center'>, string> = {
+  bottom: 'left-1/2 top-full mt-1.5 -translate-x-1/2',
+  left: 'right-full top-1/2 mr-1.5 -translate-y-1/2',
+  right: 'left-full top-1/2 ml-1.5 -translate-y-1/2',
+  top: 'bottom-full left-1/2 mb-1.5 -translate-x-1/2'
+}
+
+const DROP_BADGE_ACTIVE = 'border-(--ui-accent) bg-(--ui-accent) text-(--ui-accent-foreground,white)'
+const DROP_BADGE_IDLE = 'border-(--ui-stroke-secondary) bg-popover text-(--ui-text-secondary)'
+
+/**
+ * The badge cluster: "stack here" in the middle, arrow chips on each side.
+ * Chips are `data-drop-pos` hit targets for the drag's elementsFromPoint
+ * probe (pointer-events back ON — pointer capture keeps the events flowing
+ * to the drag handle, this only makes them hit-testable). The active target
+ * — chip under the pointer, or the coarse edge band — lights up.
+ */
+function DropTargets({
+  multi,
+  pos,
+  source,
+  stackLabel
+}: {
+  multi: boolean
+  pos: DropPosition
+  source: boolean
+  stackLabel: string
+}) {
+  const label = multi ? 'span here' : source ? 'stays here' : stackLabel
+
+  return (
+    <span className="relative inline-flex">
+      <span
+        className={cn(
+          'rounded-md border px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] transition-colors duration-75',
+          multi || pos === 'center' ? DROP_BADGE_ACTIVE : DROP_BADGE_IDLE
+        )}
+      >
+        {label}
+      </span>
+      {!multi && <DropChips pos={pos} />}
+    </span>
+  )
+}
+
+function DropChips({ pos }: { pos: DropPosition }) {
+  return (
+    <>
+      {DROP_CHIPS.map(chip => (
+          <span
+          className={cn(
+            'pointer-events-auto absolute grid size-6 place-items-center rounded-md border transition-colors duration-75',
+            CHIP_SPOT[chip.pos],
+            pos === chip.pos ? DROP_BADGE_ACTIVE : DROP_BADGE_IDLE
+          )}
+          data-drop-pos={chip.pos}
+          key={chip.pos}
+        >
+          <Codicon name={chip.arrow} size="0.75rem" />
+        </span>
+      ))}
+    </>
   )
 }

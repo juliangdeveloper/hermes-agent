@@ -6,7 +6,7 @@
  *   tree-split.tsx.
  * - `group` -> a ZONE: header strip (tabs when stacked, minimize chevron) +
  *   the active pane's content, resolved from the contribution registry
- *   (`area: 'panes'`). Empty zones persist as stable regions. See
+ *   (`area: 'panes'`). Empty zones exist only in editor-authored trees. See
  *   tree-group.tsx.
  *
  * Dragging is FancyZones-style (drag-session.ts): the LAYOUT STAYS FIXED and

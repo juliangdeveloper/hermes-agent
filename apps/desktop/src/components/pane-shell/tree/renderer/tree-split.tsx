@@ -60,8 +60,8 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   // display:none (content stays MOUNTED — toggling back is instant), and its
   // siblings absorb the space. Narrow-collapse UNMOUNTS instead, so the edge
   // overlay owns the single live instance of the pane's content.
-  // EMPTY zones are stable regions for the editor — they take space only in
-  // edit mode (drop targets); outside it they'd just be dead slack.
+  // EMPTY zones only exist in editor-authored trees (normalize prunes them on
+  // every structural op) — they take space in edit mode as drop targets.
   const isEmptyZone = (child: LayoutNode) => child.type === 'group' && child.panes.length === 0
   const isCollapsed = (child: LayoutNode) => subtreeGone(child, trackCtx) || (isEmptyZone(child) && !editMode)
 
