@@ -71,15 +71,22 @@ function createPluginStorage(pluginId: string): PluginStorage {
   }
 }
 
-/** Build the scoped context handed to a plugin's `register`. */
-export function createPluginContext(pluginId: string): PluginContext {
+/** Build the scoped context handed to a plugin's `register`. `onDispose`
+ *  receives every registration's disposer (the loader's unload/reload hook). */
+export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
   const source = `plugin:${pluginId}`
   const scope = (c: PluginContribution): Contribution => ({ ...c, id: `${pluginId}:${c.id}`, source })
 
+  const track = (dispose: () => void) => {
+    onDispose?.(dispose)
+
+    return dispose
+  }
+
   return {
     source,
-    register: c => registry.register(scope(c)),
-    registerMany: cs => registry.registerMany(cs.map(scope)),
+    register: c => track(registry.register(scope(c))),
+    registerMany: cs => track(registry.registerMany(cs.map(scope))),
     storage: createPluginStorage(pluginId)
   }
 }

@@ -1,11 +1,18 @@
 /**
- * Bundled-plugin discovery. Every `src/plugins/<name>/plugin.{ts,tsx}` that
- * default-exports a `HermesPlugin` is loaded and registered automatically —
- * drop a folder in, it shows up. No import list, no registry edit; the
- * publishing shape a third-party plugin will mirror through the runtime loader.
+ * Plugin discovery — both delivery modes:
+ *
+ *  - BUNDLED: every `src/plugins/<name>/plugin.{ts,tsx}` default-exporting a
+ *    `HermesPlugin` registers automatically (vite glob — drop a folder in).
+ *  - RUNTIME: the in-repo example ships as raw text through the REAL loader
+ *    pipeline (rewrite -> shim blobs -> blob import), then the on-disk door
+ *    (`<hermes home>/desktop-plugins/<name>/plugin.js`) — the agent's door.
  */
 
+ 
+import helloRuntimeSource from '../plugins/hello-runtime/plugin.runtime.js?raw'
+
 import { createPluginContext, type HermesPlugin } from './plugin'
+import { discoverRuntimePlugins, loadRuntimePlugin } from './runtime-loader'
 
 const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{ts,tsx}', { eager: true })
 
@@ -34,4 +41,8 @@ export function discoverBundledPlugins(): void {
       console.error(`[plugins] ${plugin.id} failed to register`, error)
     }
   }
+
+  // The runtime pipeline, dogfooded on every boot + the on-disk plugin door.
+  void loadRuntimePlugin(helloRuntimeSource, 'hello-runtime')
+  void discoverRuntimePlugins()
 }
