@@ -477,6 +477,31 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Thread memory (session-scoped, built once per session).
+    # Flag is set by agent_init from config; we read it from the agent
+    # rather than re-parsing config.yaml here (W5: single source of truth).
+    if getattr(agent, '_thread_memory_enabled', False) and getattr(agent, '_thread_id', None):
+        try:
+            from hermes_constants import get_hermes_home
+            _tm_file = get_hermes_home() / 'thread_memory' / f'{agent._thread_id}.md'
+            if _tm_file.exists():
+                _tm_content = _tm_file.read_text(encoding='utf-8').strip()
+                if _tm_content:
+                    volatile_parts.append(
+                        f"## Thread Memory — {agent._thread_id}\n"
+                        f"{_tm_content}\n\n"
+                        f"---\n"
+                        f"**Thread memory file:** `{_tm_file}`\n\n"
+                        f"Update this file using `memory(action=..., target=\"thread\", ...)` when:\n"
+                        f"- You create memories or skills relevant to this thread's domain\n"
+                        f"- Key decisions, conventions, or context are established\n"
+                        f"- The thread's purpose or scope evolves\n"
+                        f"- A delegated subagent produces results worth persisting here\n\n"
+                        f"Keep content under 2200 chars."
+                    )
+        except Exception:
+            pass
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

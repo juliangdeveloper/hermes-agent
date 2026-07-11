@@ -715,6 +715,12 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # Inherit thread_id from parent so the fork can write to
+            # thread-scoped memory files (feature: thread_memory).
+            review_agent._thread_id = getattr(agent, '_thread_id', None)
+            review_agent._thread_memory_enabled = getattr(agent, '_thread_memory_enabled', False)
+            if review_agent._memory_store:
+                review_agent._memory_store._thread_id = review_agent._thread_id
             # The review fork pins the parent's cached system prompt and keeps
             # ``tools[]`` byte-identical to the parent so its outbound request
             # hits the same provider cache prefix (see the toolset-parity note
