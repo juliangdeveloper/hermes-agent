@@ -401,6 +401,7 @@ def init_agent(
     agent._chat_name = chat_name
     agent._chat_type = chat_type
     agent._thread_id = thread_id
+    agent._thread_memory_enabled = False  # Set later from config in memory init
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
@@ -1345,6 +1346,11 @@ def init_agent(
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                 )
                 agent._memory_store.load_from_disk()
+                # Propagate thread_id so memory(target="thread") works in
+                # the main session (not only in background-review forks).
+                agent._thread_memory_enabled = bool((_agent_cfg.get('agent') or {}).get('thread_memory'))
+                if agent._thread_memory_enabled and agent._thread_id:
+                    agent._memory_store._thread_id = agent._thread_id
         except Exception:
             pass  # Memory is optional -- don't break agent init
     

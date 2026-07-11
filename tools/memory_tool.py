@@ -14,6 +14,7 @@ the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
 Entry delimiter: § (section sign). Entries can be multiline.
+Thread memory uses free-form markdown (no § delimiter).
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
@@ -21,6 +22,8 @@ Design:
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
+- Thread memory: per-thread file (~/.hermes/thread_memory/{thread_id}.md),
+  gated on agent.thread_memory config, writable via memory(target="thread")
 """
 
 import json
@@ -127,11 +130,12 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, thread_id: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._thread_id = thread_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -141,6 +145,41 @@ class MemoryStore:
     def reset_consolidation_failures(self) -> None:
         """Reset the per-turn consolidation-failure counter (call at turn start)."""
         self._consolidation_failures = 0
+
+    def _thread_memory_path(self) -> Optional[Path]:
+        """Return the thread memory file path, or None if unavailable."""
+        if not self._thread_id:
+            return None
+        return get_hermes_home() / 'thread_memory' / f'{self._thread_id}.md'
+
+    def _handle_thread(self, action: str, content: str = "", old_text: str = "") -> Dict[str, Any]:
+        """Handle thread memory add/replace/remove operations."""
+        path = self._thread_memory_path()
+        if not path:
+            return {"success": False, "error": "No thread_id available"}
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+
+        if action == "add":
+            new = (current + "\n" + content).strip() if current else content.strip()
+        elif action == "replace":
+            if not old_text or old_text not in current:
+                return {"success": False, "error": "old_text not found in thread memory"}
+            new = current.replace(old_text, content, 1)
+        elif action == "remove":
+            if not old_text or old_text not in current:
+                return {"success": False, "error": "old_text not found in thread memory"}
+            new = current.replace(old_text, "", 1).strip()
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        if len(new) > 2200:
+            return {"success": False, "error": f"Content exceeds 2200 char limit ({len(new)})"}
+
+        path.write_text(new, encoding="utf-8")
+        return {"success": True, "message": f"Thread memory {action} OK"}
 
     def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Count an at-capacity consolidation failure and degrade gracefully.
@@ -983,8 +1022,30 @@ def memory_tool(
     if target is None:
         target = "memory"
 
-    if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    _valid_targets = set(_build_target_enum())
+    if target not in _valid_targets:
+        return tool_error(f"Invalid target '{target}'. Use: {', '.join(sorted(_valid_targets))}.", success=False)
+
+    # --- Thread memory path ------------------------------------------------
+    # Thread writes intentionally bypass the write-approval gate.  Thread
+    # memory files are per-thread (scoped to one conversation topic) and
+    # user-controlled via config, so they carry lower risk than the shared
+    # memory/user stores.  The gate's staged-write UX also doesn't map well
+    # to free-form markdown files.  If approval is ever needed for thread
+    # writes, route through _apply_write_gate here and add a thread handler
+    # to apply_memory_pending (C4 already handles the replay path).
+    if target == "thread":
+        if not action:
+            return tool_error("Action is required for thread memory.", success=False)
+        # Validate content/old_text the same way the regular path does.
+        if action == "add" and not content:
+            return tool_error("Content is required for 'add' action.", success=False)
+        if action == "replace" and (not old_text or not content):
+            missing = "old_text" if not old_text else "content"
+            return tool_error(f"{missing} is required for 'replace' action.", success=False)
+        if action == "remove" and not old_text:
+            return tool_error("old_text is required for 'remove' action.", success=False)
+        return json.dumps(store._handle_thread(action, content=content or "", old_text=old_text or ""), ensure_ascii=False)
 
     # --- Batch path -------------------------------------------------------
     if operations:
@@ -1049,6 +1110,12 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    # Thread memory writes are routed to the thread file handler.
+    if target == "thread":
+        if action == "batch":
+            # Batch not supported for thread memory; individual ops only.
+            return {"success": False, "error": "Batch operations are not supported for thread memory."}
+        return store._handle_thread(action or "", content=content, old_text=old_text)
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action == "add":
@@ -1060,6 +1127,95 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
+
+# Cache for _thread_memory_enabled() — avoids re-parsing config.yaml on every
+# call.  Invalidated by mtime change or 5-second TTL.
+_tm_enabled_cache: Optional[bool] = None
+_tm_enabled_ts: float = 0.0
+_tm_enabled_mtime: float = 0.0
+
+
+def _thread_memory_enabled() -> bool:
+    """Check if thread memory is enabled in config.
+
+    Result is cached for 5 s to avoid re-parsing config.yaml on every call
+    (W1).  The cache is invalidated when the file's mtime changes.
+    """
+    global _tm_enabled_cache, _tm_enabled_ts, _tm_enabled_mtime
+    now = time.time()
+    if _tm_enabled_cache is not None and (now - _tm_enabled_ts) < 5.0:
+        return _tm_enabled_cache
+    try:
+        import yaml as _yaml
+        _cfg_path = get_hermes_home() / 'config.yaml'
+        mt = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
+        if _tm_enabled_cache is not None and mt == _tm_enabled_mtime:
+            _tm_enabled_ts = now
+            return _tm_enabled_cache
+        if _cfg_path.exists():
+            with open(_cfg_path) as _f:
+                _cfg = _yaml.safe_load(_f) or {}
+            _tm_enabled_cache = bool((_cfg.get('agent') or {}).get('thread_memory'))
+        else:
+            _tm_enabled_cache = False
+        _tm_enabled_ts = now
+        _tm_enabled_mtime = mt
+    except Exception:
+        pass
+    return _tm_enabled_cache or False
+
+
+def _build_target_enum() -> list:
+    """Build the target enum based on config."""
+    targets = ["memory", "user"]
+    if _thread_memory_enabled():
+        targets.append("thread")
+    return targets
+
+
+def _build_target_description() -> str:
+    """Build the target description based on config."""
+    desc = "Which memory store: 'memory' for personal notes, 'user' for user profile."
+    if _thread_memory_enabled():
+        desc += " 'thread' for thread-scoped memory (context, decisions, and state specific to this conversation thread)."
+    return desc
+
+
+def _build_schema_description() -> str:
+    """Build the memory tool schema description, conditionally including thread."""
+    desc = (
+        "Save durable facts to persistent memory that survive across sessions. Memory is "
+        "injected into every future turn, so keep entries compact and high-signal.\n\n"
+        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
+        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "checked only on the FINAL result — so a single call can remove/replace stale entries "
+        "to free room AND add new ones, even when an add alone would overflow. The response "
+        "reports current/limit chars and confirms completion; one batch call finishes the "
+        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
+        "single lone change.\n\n"
+        "WHEN: save proactively when the user states a preference, correction, or personal "
+        "detail, or you learn a stable fact about their environment, conventions, or workflow. "
+        "Priority: user preferences & corrections > environment facts > procedures. The best "
+        "memory stops the user repeating themselves.\n\n"
+        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
+        "removes or shortens enough stale entries and adds the new one together.\n\n"
+        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
+        "notes (environment, conventions, tool quirks, lessons)."
+    )
+    if _thread_memory_enabled():
+        desc += (
+            " 'thread' = thread-scoped "
+            "memory (context, decisions, and state specific to this conversation thread). "
+            "Only available when agent.thread_memory is enabled in config."
+        )
+    desc += (
+        "\n\n"
+        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
+        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
+        "procedures belong in a skill, not memory."
+    )
+    return desc
+
 
 MEMORY_SCHEMA = {
     "name": "memory",
@@ -1080,7 +1236,8 @@ MEMORY_SCHEMA = {
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "notes (environment, conventions, tool quirks, lessons)."
+        " Thread target is added dynamically when agent.thread_memory is enabled.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
@@ -1128,6 +1285,29 @@ MEMORY_SCHEMA = {
     },
 }
 
+def get_memory_schema() -> dict:
+    """Return the memory tool schema, dynamically including 'thread' if enabled."""
+    schema = {
+        "name": "memory",
+        "description": _build_schema_description(),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": MEMORY_SCHEMA["parameters"]["properties"]["action"],
+                "target": {
+                    "type": "string",
+                    "enum": _build_target_enum(),
+                    "description": _build_target_description(),
+                },
+                "content": MEMORY_SCHEMA["parameters"]["properties"]["content"],
+                "old_text": MEMORY_SCHEMA["parameters"]["properties"]["old_text"],
+                "operations": MEMORY_SCHEMA["parameters"]["properties"]["operations"],
+            },
+            "required": ["target"],
+        },
+    }
+    return schema
+
 
 # --- Registry ---
 from tools.registry import registry, tool_error
@@ -1135,7 +1315,7 @@ from tools.registry import registry, tool_error
 registry.register(
     name="memory",
     toolset="memory",
-    schema=MEMORY_SCHEMA,
+    schema=get_memory_schema(),
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""),
         target=args.get("target", "memory"),
